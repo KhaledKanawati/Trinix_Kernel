@@ -1,0 +1,108 @@
+#include "types.h"
+#include "x86.h"
+#include "defs.h"
+#include "date.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "syscall.h"
+extern int counter[SYSCALLSMETHODS];
+int
+sys_fork(void)
+{
+  return fork();
+}
+
+int
+sys_exit(void)
+{
+  exit();
+  return 0;  // not reached
+}
+
+int
+sys_wait(void)
+{
+  return wait();
+}
+
+int
+sys_kill(void)
+{
+  int pid;
+
+  if(argint(0, &pid) < 0)
+    return -1;
+  return kill(pid);
+}
+
+int
+sys_getpid(void)
+{
+  return myproc()->pid;
+}
+
+int
+sys_sbrk(void)
+{
+  int addr;
+  int n;
+
+  if(argint(0, &n) < 0)
+    return -1;
+  addr = myproc()->sz;
+  if(growproc(n) < 0)
+    return -1;
+  return addr;
+}
+
+int
+sys_sleep(void)
+{
+  int n;
+  uint ticks0;
+
+  if(argint(0, &n) < 0)
+    return -1;
+  acquire(&tickslock);
+  ticks0 = ticks;
+  while(ticks - ticks0 < n){
+    if(myproc()->killed){
+      release(&tickslock);
+      return -1;
+    }
+    sleep(&ticks, &tickslock);
+  }
+  release(&tickslock);
+  return 0;
+}
+
+// return how many clock tick interrupts have occurred
+// since start.
+int
+sys_uptime(void)
+{
+  uint xticks;
+
+  acquire(&tickslock);
+  xticks = ticks;
+  release(&tickslock);
+  return xticks;
+}
+//Process to return 
+//
+int
+sys_getsystemcallscount(void)
+{
+    int *userbuf;
+    int ret;
+    if(argptr(0, (void*)&userbuf, SYSCALLSMETHODS * sizeof(int)) < 0)//make userbuf point to user's passed array, and make sure no errors occured/occurs
+        return -1;
+    for(int i = 0; i < SYSCALLSMETHODS; i++){
+        ret = copyout(myproc()->pgdir, (uint)(&userbuf[i]),(char*)(&counter[i]), sizeof(int));//copy the values back to the userbuf(char * cuz i want bytes not 4 byts(way function is defined, it copies raw memory, not data))
+        if(ret < 0)
+            return -1;
+    }
+    return 1;
+}
