@@ -134,6 +134,7 @@ void remove_newline(char *s)
     s[len - 1] = '\0';
 }
 
+//Checks using pass and user inputted by user if its a valid user, return 1 if yes, 0 if not
 int login(void)
 {
   char user[MAX_INPUT];
