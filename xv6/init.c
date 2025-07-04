@@ -200,12 +200,10 @@ int main(void)
     if(!strcmp(ans, "Signup")){
       sign_Up = 1;
       if(signUp()){break;}
-      printf(1,"Fail in signup, try again.\n");
       continue;
     }
     else if(!strcmp(ans, "Login")){
       if(login()){break;}
-      printf(1,"Fail in login, try again.\n");
       continue;
     }
     printf(1, "Input valid choice!\n");
