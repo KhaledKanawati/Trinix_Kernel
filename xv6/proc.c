@@ -6,10 +6,14 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#define PRIORITY_MAX 2
 
-struct {
+
+static struct {
   struct spinlock lock;
   struct proc proc[NPROC];
+  struct proc *que[PRIORITY_MAX+1][NPROC];  
+  int       priCount[PRIORITY_MAX+1];       
 } ptable;
 
 static struct proc *initproc;
@@ -88,7 +92,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
-
+  p->priority = 0;
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -214,8 +218,10 @@ fork(void)
 
   acquire(&ptable.lock);
 
+// put the child into the level‐0 queue
+  ptable.priCount[0]++;
+  ptable.que[0][ptable.priCount[0]] = np;
   np->state = RUNNABLE;
-
   release(&ptable.lock);
 
   return pid;
@@ -311,47 +317,33 @@ wait(void)
   }
 }
 
-//PAGEBREAK: 42
-// Per-CPU process scheduler.
-// Each CPU calls scheduler() after setting itself up.
-// Scheduler never returns.  It loops, doing:
-//  - choose a process to run
-//  - swtch to start running that process
-//  - eventually that process transfers control
-//      via swtch back to the scheduler.
+
 void
 scheduler(void)
 {
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
-  
   for(;;){
-    // Enable interrupts on this processor.
     sti();
-
-    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+    int level;
+    for(level = 0; level <= PRIORITY_MAX; level++){
+      while(ptable.priCount[level] > 0){
+        struct proc *p = ptable.que[level][0];
+        // dequeue
+        int i;
+        for(i = 0; i < ptable.priCount[level]; i++)
+          ptable.que[level][i] = ptable.que[level][i+1];
+        ptable.priCount[level]--;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+        switchuvm(p);
+        p->state = RUNNING;
+        swtch(&cpu->scheduler, p->context);
+        switchkvm();
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+        // after return, restart at highest priority
+        level = 0;
+      }
     }
     release(&ptable.lock);
-
   }
 }
 
@@ -381,12 +373,15 @@ sched(void)
   mycpu()->intena = intena;
 }
 
-// Give up the CPU for one scheduling round.
 void
 yield(void)
 {
-  acquire(&ptable.lock);  //DOC: yieldlock
-  myproc()->state = RUNNABLE;
+  acquire(&ptable.lock);
+  if(proc->priority < PRIORITY_MAX)
+    proc->priority++;
+  ptable.priCount[proc->priority]++;
+  ptable.que[proc->priority][ptable.priCount[proc->priority]] = proc;
+  proc->state = RUNNABLE;
   sched();
   release(&ptable.lock);
 }
@@ -462,6 +457,29 @@ wakeup1(void *chan)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     if(p->state == SLEEPING && p->chan == chan)
       p->state = RUNNABLE;
+}
+
+void
+resetPriority(void)
+{
+    int lvl;
+    struct proc *p;
+    acquire(&ptable.lock);
+    for(lvl = 0; lvl <= PRIORITY_MAX; lvl++){
+        while(ptable.priCount[lvl] > 0){
+            p = ptable.que[lvl][0];
+            // dequeue
+            int i;
+            for(i = 0; i < ptable.priCount[lvl]; i++)
+                ptable.que[lvl][i] = ptable.que[lvl][i+1];
+            ptable.priCount[lvl]--;
+            // boost
+            p->priority = 0;
+            ptable.priCount[0]++;
+            ptable.que[0][ptable.priCount[0]] = p;
+        }
+    }
+    release(&ptable.lock);
 }
 
 // Wake up all processes sleeping on chan.

@@ -8,6 +8,10 @@
 #include "traps.h"
 #include "spinlock.h"
 
+extern void resetPriority(void);
+static struct spinlock tickslock;
+static uint ticks;
+
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
@@ -48,13 +52,16 @@ trap(struct trapframe *tf)
 
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
-    if(cpuid() == 0){
+    if(cpu->id == 0){
       acquire(&tickslock);
       ticks++;
-      wakeup(&ticks);
+      if(ticks % 20 == 0)
+        resetPriority();
       release(&tickslock);
     }
     lapiceoi();
+    if(proc && proc->state == RUNNING)
+      yield();
     break;
   case T_IRQ0 + IRQ_IDE:
     ideintr();
