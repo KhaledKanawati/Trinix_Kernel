@@ -166,6 +166,11 @@ mkfs: mkfs.c fs.h
 .PRECIOUS: %.o
 
 UPROGS=\
+	_userprog1\
+	_userprog3\
+	_userprog4\
+	_userprog2\
+	_userprog5\
 	_scountTest2\
 	_scountTest1\
 	_scount\
@@ -258,6 +263,11 @@ EXTRA=\
 	printf.c umalloc.c\
 	scount.c\
 	scountTest1\
+	userprog1\
+	userprog2\
+	userprog3\
+	userprog4\
+	userprog5\
 	scountTest2\
 	tree\
 	treeTest\

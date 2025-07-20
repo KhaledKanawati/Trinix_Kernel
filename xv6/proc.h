@@ -9,7 +9,7 @@ struct cpu {
   int intena;                  // Were interrupts enabled before pushcli?
   struct proc *proc;           // The process running on this cpu or null
 };
-
+extern int timeslices[4];  // Declaration only, no initialization here
 extern struct cpu cpus[NCPU];
 extern int ncpu;
 
@@ -33,7 +33,6 @@ struct context {
 };
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
-#define PRIORITY_MAX 2   // MLFQ levels 0 (highest) → 2 (lowest)
 
 // Per-process state
 struct proc {
@@ -42,7 +41,6 @@ struct proc {
   char *kstack;                // Bottom of kernel stack for this process
   enum procstate state;        // Process state
   int pid;                     // Process ID
-  int priority;         // MLFQ priority (0…PRIORITY_MAX)
   struct proc *parent;         // Parent process
   struct trapframe *tf;        // Trap frame for current syscall
   struct context *context;     // swtch() here to run process
@@ -51,6 +49,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int priority;                // Current priority level (0 = highest)
+  uint last_run;               // Time when process was last scheduled (for aging)
+  int runtime;                 // Number of ticks run in current time slice
 };
 
 // Process memory is laid out contiguously, low addresses first:

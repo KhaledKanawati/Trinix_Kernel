@@ -7,11 +7,6 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
-
-extern void resetPriority(void);
-static struct spinlock tickslock;
-static uint ticks;
-
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
@@ -52,16 +47,13 @@ trap(struct trapframe *tf)
 
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
-    if(cpu->id == 0){
+    if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
-      if(ticks % 20 == 0)
-        resetPriority();
+      wakeup(&ticks);
       release(&tickslock);
     }
     lapiceoi();
-    if(proc && proc->state == RUNNING)
-      yield();
     break;
   case T_IRQ0 + IRQ_IDE:
     ideintr();
@@ -109,9 +101,15 @@ trap(struct trapframe *tf)
 
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.
-  if(myproc() && myproc()->state == RUNNING &&
-     tf->trapno == T_IRQ0+IRQ_TIMER)
-    yield();
+  struct proc *cur = myproc();
+    if (cur && cur->state == RUNNING) {
+      cur->runtime++;
+
+      int maxslice = timeslices[cur->priority];
+      if (maxslice != -1 && cur->runtime >= maxslice) {
+        yield();  // time slice over, demote and reschedule
+      }
+    }
 
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)

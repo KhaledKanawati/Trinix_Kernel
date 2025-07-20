@@ -105,8 +105,6 @@
   extern int sys_write(void);
   extern int sys_uptime(void);
   extern int sys_getsystemcallscount(void);
-  extern int sys_nice(void);
-  extern int sys_getpri(void);
 
   static int (*syscalls[])(void) = {
   [SYS_fork]    sys_fork,
@@ -131,8 +129,6 @@
   [SYS_mkdir]   sys_mkdir,
   [SYS_close]   sys_close,
   [SYS_getsystemcallscount] sys_getsystemcallscount,
-  [SYS_nice]  sys_nice,
-  [SYS_getpri] sys_getpri,
   };
 
   void

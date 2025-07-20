@@ -106,23 +106,3 @@ sys_getsystemcallscount(void)
     }
     return 1;
 }
-
-int
-sys_nice(void)
-{
-  int n;
-  if(argint(0, &n) < 0)
-    return -1;
-  proc->priority = n;
-  return 0;
-}
-
-int
-sys_getpri(void)
-{
-  if(proc){
-    cprintf("PID:%d, priority:%d\n", proc->pid, proc->priority);
-    return proc->priority;
-  }
-  return -1;
-}

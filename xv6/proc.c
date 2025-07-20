@@ -6,16 +6,16 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
-#define PRIORITY_MAX 2
-
-
-static struct {
+extern uint ticks;
+struct {
   struct spinlock lock;
   struct proc proc[NPROC];
-  struct proc *que[PRIORITY_MAX+1][NPROC];  
-  int       priCount[PRIORITY_MAX+1];       
 } ptable;
 
+int timeslices[4] = {5, 10, 20, -1}; //Time slice for each queue
+
+struct proc* queue[NQUEUES][NPROC]; //declaring each queue
+int qsize[NQUEUES];  //size of each queue
 static struct proc *initproc;
 
 int nextpid = 1;
@@ -24,10 +24,37 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+//Helper methods to enqueue and dequeue
+static void
+enqueue(int pri, struct proc *p) {
+  //Assert that lock is held
+  if(!holding(&ptable.lock))
+    panic("enqueue without ptable.lock");
+
+  if(qsize[pri] >= NPROC)
+    panic("enqueue: queue overflow");
+
+  queue[pri][qsize[pri]++] = p;
+}
+
+static struct proc*
+dequeue(int pri, int idx) {
+  if(!holding(&ptable.lock))
+    panic("dequeue without ptable.lock");
+
+  struct proc *p = queue[pri][idx];
+  for(int j = idx; j < qsize[pri] - 1; j++)
+    queue[pri][j] = queue[pri][j+1];
+  qsize[pri]--;
+  return p;
+}
+
 void
 pinit(void)
 {
   initlock(&ptable.lock, "ptable");
+  for(int i = 0; i < NQUEUES; i++)
+    qsize[i] = 0;
 }
 
 // Must be called with interrupts disabled
@@ -92,7 +119,9 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
-  p->priority = 0;
+  p->runtime = 0;   //0 execution time as of yet
+  p->priority = 0;  //new processes start at highest priority
+  p->last_run = ticks;
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -152,7 +181,10 @@ userinit(void)
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
 
+  p->priority = 0;
+  p->last_run = ticks;
   p->state = RUNNABLE;
+  enqueue(0, p);
 
   release(&ptable.lock);
 }
@@ -217,11 +249,12 @@ fork(void)
   pid = np->pid;
 
   acquire(&ptable.lock);
-
-// put the child into the level‐0 queue
-  ptable.priCount[0]++;
-  ptable.que[0][ptable.priCount[0]] = np;
+  //Modify the way adding a process works
+  np->priority = 0;
+  np->last_run = ticks;
   np->state = RUNNABLE;
+  enqueue(0, np);
+
   release(&ptable.lock);
 
   return pid;
@@ -317,35 +350,68 @@ wait(void)
   }
 }
 
-
+//PAGEBREAK: 42
+// Per-CPU process scheduler.
+// Each CPU calls scheduler() after setting itself up.
+// Scheduler never returns.  It loops, doing:
+//  - choose a process to run
+//  - swtch to start running that process
+//  - eventually that process transfers control
+//      via swtch back to the scheduler.
 void
 scheduler(void)
 {
+  struct cpu *c = mycpu();
+  c->proc = 0;
+
   for(;;){
     sti();
     acquire(&ptable.lock);
-    int level;
-    for(level = 0; level <= PRIORITY_MAX; level++){
-      while(ptable.priCount[level] > 0){
-        struct proc *p = ptable.que[level][0];
-        // dequeue
-        int i;
-        for(i = 0; i < ptable.priCount[level]; i++)
-          ptable.que[level][i] = ptable.que[level][i+1];
-        ptable.priCount[level]--;
 
+    //Aging to promote long waiting processes
+    for (int pri = 1; pri < NQUEUES; pri++) {
+      if (qsize[pri] == 0) continue; //skip if queue is empty
+      int i = 0;
+      while (i < qsize[pri]) {
+        struct proc* p = queue[pri][i];
+        if (ticks - p->last_run > AGING_THRESHOLD) {
+          dequeue(pri, i);
+          if (p->priority > 0)
+            p->priority--;
+          p->last_run = ticks;
+          enqueue(p->priority, p);
+          // No increment here because queue was shifted
+        } else {
+          i++;
+        }
+      }
+    }
+    // Run highest-priority runnable process
+    int scheduled = 0;
+    for (int pri = 0; pri < NQUEUES && !scheduled; pri++) {
+      if (qsize[pri] == 0) continue; //skip if queue is empty
+      for (int i = 0; i < qsize[pri]; i++) {
+        struct proc *p = queue[pri][i];
+        if (p->state != RUNNABLE)
+          continue;
+
+        dequeue(pri, i);
+        c->proc = p;
         switchuvm(p);
         p->state = RUNNING;
-        swtch(&cpu->scheduler, p->context);
-        switchkvm();
+        p->last_run = ticks;
 
-        // after return, restart at highest priority
-        level = 0;
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
+        c->proc = 0;
+        scheduled = 1;
+        break;
       }
     }
     release(&ptable.lock);
   }
 }
+
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
@@ -373,15 +439,19 @@ sched(void)
   mycpu()->intena = intena;
 }
 
+// Lower priority and enqueue the process in its new queue, always demtoe if yield is called
 void
 yield(void)
 {
+  procdump(); //FOR TESTING
   acquire(&ptable.lock);
-  if(proc->priority < PRIORITY_MAX)
-    proc->priority++;
-  ptable.priCount[proc->priority]++;
-  ptable.que[proc->priority][ptable.priCount[proc->priority]] = proc;
-  proc->state = RUNNABLE;
+  
+  struct proc* p = myproc();
+  if (p->priority < NQUEUES - 1)
+    p->priority++;
+  p->runtime = 0;
+  p->state = RUNNABLE;
+  enqueue(p->priority, p);
   sched();
   release(&ptable.lock);
 }
@@ -413,34 +483,34 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   if(p == 0)
     panic("sleep");
 
   if(lk == 0)
     panic("sleep without lk");
 
-  // Must acquire ptable.lock in order to
-  // change p->state and then call sched.
-  // Once we hold ptable.lock, we can be
-  // guaranteed that we won't miss any wakeup
-  // (wakeup runs with ptable.lock locked),
-  // so it's okay to release lk.
-  if(lk != &ptable.lock){  //DOC: sleeplock0
-    acquire(&ptable.lock);  //DOC: sleeplock1
+  if(lk != &ptable.lock){
+    acquire(&ptable.lock);
     release(lk);
   }
-  // Go to sleep.
+
+  // Remove from queue before sleeping
+  for(int i = 0; i < qsize[p->priority]; i++) {
+    if(queue[p->priority][i] == p) {
+      dequeue(p->priority, i);
+      break;
+    }
+  }
+
   p->chan = chan;
   p->state = SLEEPING;
 
   sched();
 
-  // Tidy up.
   p->chan = 0;
 
-  // Reacquire original lock.
-  if(lk != &ptable.lock){  //DOC: sleeplock2
+  if(lk != &ptable.lock){
     release(&ptable.lock);
     acquire(lk);
   }
@@ -455,31 +525,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
-}
-
-void
-resetPriority(void)
-{
-    int lvl;
-    struct proc *p;
-    acquire(&ptable.lock);
-    for(lvl = 0; lvl <= PRIORITY_MAX; lvl++){
-        while(ptable.priCount[lvl] > 0){
-            p = ptable.que[lvl][0];
-            // dequeue
-            int i;
-            for(i = 0; i < ptable.priCount[lvl]; i++)
-                ptable.que[lvl][i] = ptable.que[lvl][i+1];
-            ptable.priCount[lvl]--;
-            // boost
-            p->priority = 0;
-            ptable.priCount[0]++;
-            ptable.que[0][ptable.priCount[0]] = p;
-        }
+      enqueue(p->priority, p);
     }
-    release(&ptable.lock);
 }
 
 // Wake up all processes sleeping on chan.
@@ -503,9 +552,20 @@ kill(int pid)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
       p->killed = 1;
+      if(p->state == RUNNABLE){
+        // Remove from the queue immediately
+        for(int i = 0; i < qsize[p->priority]; i++){
+          if(queue[p->priority][i] == p){
+            dequeue(p->priority, i);
+            break;
+          }
+        }
+      }
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      else if(p->state == SLEEPING){
         p->state = RUNNABLE;
+        enqueue(p->priority, p);
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -541,7 +601,7 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    cprintf("%d %s %s", p->pid, state, p->name);
+    cprintf("%d %s %s %d %d %d", p->pid, state, p->name, p->priority, p->runtime, p->last_run);
     if(p->state == SLEEPING){
       getcallerpcs((uint*)p->context->ebp+2, pc);
       for(i=0; i<10 && pc[i] != 0; i++)
