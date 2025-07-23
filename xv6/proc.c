@@ -443,7 +443,7 @@ sched(void)
 void
 yield(void)
 {
-  procdump(); //FOR TESTING
+  //procdump(); //FOR TESTING
   acquire(&ptable.lock);
   
   struct proc* p = myproc();
